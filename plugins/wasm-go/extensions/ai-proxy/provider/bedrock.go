@@ -1501,9 +1501,13 @@ func chatMessage2BedrockMessage(chatMessage chatMessage) (bedrockMessage, error)
 		contents := make([]bedrockMessageContent, 0, len(chatMessage.ToolCalls))
 		for _, toolCall := range chatMessage.ToolCalls {
 			params := map[string]json.RawMessage{}
-			json.Unmarshal([]byte(toolCall.Function.Arguments), &params)
-			if params == nil {
-				params = map[string]json.RawMessage{}
+			if trimmed := strings.TrimSpace(toolCall.Function.Arguments); trimmed != "" && trimmed != "null" {
+				if err := json.Unmarshal([]byte(trimmed), &params); err != nil {
+					return bedrockMessage{}, fmt.Errorf("invalid tool call arguments for %s: %w", toolCall.Function.Name, err)
+				}
+				if params == nil {
+					params = map[string]json.RawMessage{}
+				}
 			}
 			contents = append(contents, bedrockMessageContent{
 				ToolUse: &toolUseBlock{

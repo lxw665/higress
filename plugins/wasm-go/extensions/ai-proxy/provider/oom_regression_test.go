@@ -87,6 +87,85 @@ func TestBedrockToolUseInputPreservesRawJSONAndErrorsOnInvalid(t *testing.T) {
 
 	_, err = claudeToolUseInput(claudeRawJSONObject(`{"broken":`))
 	assert.Error(t, err)
+
+	_, err = chatMessage2BedrockMessage(chatMessage{
+		Role: roleAssistant,
+		ToolCalls: []toolCall{
+			{Id: "call_bad", Type: "function", Function: functionCall{Name: "fn", Arguments: `{"broken":`}},
+		},
+	})
+	assert.Error(t, err)
+}
+
+func TestConvertClaudeRequestFixedGoldenOutputAndInvalidInput(t *testing.T) {
+	converter := &ClaudeToOpenAIConverter{}
+	claudeReq := []byte(`{
+		"model": "kimi-k3-gs",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": "calling tools"},
+					{"type": "tool_use", "id": "call_norm", "name": "edit", "input": { "path": "a.go", "id": 9007199254740993, "extra": null }},
+					{"type": "tool_use", "id": "call_null", "name": "noop_null", "input": null},
+					{"type": "tool_use", "id": "call_empty", "name": "noop_empty", "input": {}}
+				]
+			}
+		]
+	}`)
+
+	out, err := converter.ConvertClaudeRequestToOpenAIWithOptions(claudeReq, ClaudeToOpenAIConvertOptions{
+		OmitClaudeInternalFields: true,
+	})
+	require.NoError(t, err)
+
+	expectedGolden := `{
+		"model": "kimi-k3-gs",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "assistant",
+				"content": "calling tools",
+				"tool_calls": [
+					{
+						"index": 0,
+						"id": "call_norm",
+						"type": "function",
+						"function": {
+							"name": "edit",
+							"arguments": "{\"path\":\"a.go\",\"id\":9007199254740993,\"extra\":null}"
+						}
+					},
+					{
+						"index": 0,
+						"id": "call_null",
+						"type": "function",
+						"function": {
+							"name": "noop_null",
+							"arguments": ""
+						}
+					},
+					{
+						"index": 0,
+						"id": "call_empty",
+						"type": "function",
+						"function": {
+							"name": "noop_empty",
+							"arguments": "{}"
+						}
+					}
+				]
+			}
+		]
+	}`
+	assert.JSONEq(t, expectedGolden, string(out))
+
+	for _, invalidInput := range []string{`"not-an-object"`, `[1,2,3]`, `123`} {
+		badReq := []byte(fmt.Sprintf(`{"model":"m","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"fn","input":%s}]}]}`, invalidInput))
+		_, err := converter.ConvertClaudeRequestToOpenAIWithOptions(badReq, ClaudeToOpenAIConvertOptions{OmitClaudeInternalFields: true})
+		assert.Error(t, err, "expected unmarshal error for non-object tool_use.input=%s", invalidInput)
+	}
 }
 
 type testHttpCtx struct {
