@@ -1107,23 +1107,18 @@ func isDeveloperRoleSupported(providerType string) bool {
 // convertDeveloperRoleToSystem converts "developer" roles to "system" role in the request body.
 // This is used for providers that don't support the "developer" role.
 func convertDeveloperRoleToSystem(body []byte) ([]byte, error) {
-	var probe struct {
-		Messages []struct {
-			Role string `json:"role"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return body, fmt.Errorf("unable to unmarshal request for developer role conversion: %v", err)
-	}
-	hasDeveloper := false
-	for i := range probe.Messages {
-		if probe.Messages[i].Role == roleDeveloper {
-			hasDeveloper = true
-			break
+	if !gjson.GetBytes(body, `messages.#(role=="developer").role`).Exists() {
+		if !json.Valid(body) {
+			return body, fmt.Errorf("unable to unmarshal request for developer role conversion: invalid json")
 		}
-	}
-	if !hasDeveloper {
-		return body, nil
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) > 0 && trimmed[0] == '{' {
+			if gjson.GetBytes(body, "messages.#").Type == gjson.Number ||
+				!gjson.GetBytes(body, "messages").Exists() ||
+				gjson.GetBytes(body, "messages").Type == gjson.Null {
+				return body, nil
+			}
+		}
 	}
 
 	request := &chatCompletionRequest{}
