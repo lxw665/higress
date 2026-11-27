@@ -334,9 +334,10 @@ func TestBedrockRequestToolResultWithTrailingTextDoesNotDuplicateToolResult(t *t
 }
 
 func TestBedrockRequestRedactedThinkingUsesSingleUnionArm(t *testing.T) {
-	contents := claudeContentBlocksToBedrockContents([]claudeChatMessageContent{
+	contents, err := claudeContentBlocksToBedrockContents([]claudeChatMessageContent{
 		{Type: "redacted_thinking", Data: "opaque-base64"},
 	})
+	require.NoError(t, err)
 
 	body, err := json.Marshal(contents[0])
 	require.NoError(t, err)
@@ -360,9 +361,10 @@ func TestBedrockRequestToolResultDefaultsEmptyContent(t *testing.T) {
 }
 
 func TestBedrockRequestPreservesEmptyThinkingTextWithSignature(t *testing.T) {
-	contents := claudeContentBlocksToBedrockContents([]claudeChatMessageContent{
+	contents, err := claudeContentBlocksToBedrockContents([]claudeChatMessageContent{
 		{Type: "thinking", Thinking: "", Signature: "sig"},
 	})
+	require.NoError(t, err)
 
 	body, err := json.Marshal(contents[0])
 	require.NoError(t, err)

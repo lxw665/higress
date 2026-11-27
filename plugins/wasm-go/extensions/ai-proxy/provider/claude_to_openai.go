@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -137,6 +138,9 @@ type ClaudeToOpenAIConvertOptions struct {
 	// into the converted OpenAI request, for compatibility with older
 	// inference engines that reject unknown fields.
 	DisableStreamUsageStats bool
+	// OmitClaudeInternalFields skips populating Claude-only internal roundtrip
+	// fields when the target provider is not Claude or Bedrock.
+	OmitClaudeInternalFields bool
 }
 
 func (r *contentConversionResult) reasoningContent() string {
@@ -151,7 +155,9 @@ func (r *contentConversionResult) setReasoningContent(message *chatMessage, opti
 
 func applyReasoningFields(message *chatMessage, conversionResult *contentConversionResult, options ClaudeToOpenAIConvertOptions) {
 	conversionResult.setReasoningContent(message, options)
-	message.ClaudeContentBlocks = conversionResult.claudeContentBlocks
+	if !options.OmitClaudeInternalFields {
+		message.ClaudeContentBlocks = conversionResult.claudeContentBlocks
+	}
 }
 
 // ConvertClaudeRequestToOpenAI converts a Claude chat completion request to strict OpenAI format.
@@ -164,7 +170,7 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAI(body []byte) ([]b
 
 // ConvertClaudeRequestToOpenAIWithOptions converts a Claude chat completion request to OpenAI format.
 func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAIWithOptions(body []byte, options ClaudeToOpenAIConvertOptions) ([]byte, error) {
-	log.Debugf("[Claude->OpenAI] Original Claude request body: %s", string(body))
+	log.Debugf("[Claude->OpenAI] Original Claude request body: %s", body)
 
 	var claudeRequest claudeTextGenRequest
 	if err := json.Unmarshal(body, &claudeRequest); err != nil {
@@ -199,7 +205,7 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAIWithOptions(body [
 			openaiRequest.Messages = append(openaiRequest.Messages, openaiMsg)
 		} else {
 			// Multi-modal content - process with convertContentArray
-			conversionResult := c.convertContentArray(claudeMsg.Content.GetArrayValue())
+			conversionResult := c.convertContentArray(claudeMsg.Content.GetArrayValue(), options.OmitClaudeInternalFields)
 
 			// Handle tool calls if present
 			if len(conversionResult.toolCalls) > 0 {
@@ -223,11 +229,17 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAIWithOptions(body [
 			// Handle tool results if present
 			if len(conversionResult.toolResults) > 0 {
 				for _, toolResult := range conversionResult.toolResults {
+					var toolResultContent string
+					if toolResult.Content != nil {
+						toolResultContent = toolResult.Content.GetStringValue()
+					}
 					toolMsg := chatMessage{
-						Role:                "tool",
-						Content:             toolResult.Content.GetStringValue(),
-						ToolCallId:          toolResult.ToolUseId,
-						ClaudeContentBlocks: []claudeChatMessageContent{toolResult},
+						Role:       "tool",
+						Content:    toolResultContent,
+						ToolCallId: toolResult.ToolUseId,
+					}
+					if !options.OmitClaudeInternalFields {
+						toolMsg.ClaudeContentBlocks = []claudeChatMessageContent{toolResult}
 					}
 					openaiRequest.Messages = append(openaiRequest.Messages, toolMsg)
 				}
@@ -326,7 +338,9 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAIWithOptions(body [
 	if claudeRequest.Thinking != nil {
 		log.Debugf("[Claude->OpenAI] Found thinking config: type=%s, budget_tokens=%d",
 			claudeRequest.Thinking.Type, claudeRequest.Thinking.BudgetTokens)
-		openaiRequest.ClaudeThinking = claudeRequest.Thinking
+		if !options.OmitClaudeInternalFields {
+			openaiRequest.ClaudeThinking = claudeRequest.Thinking
+		}
 
 		if claudeRequest.Thinking.Type == "enabled" {
 			// Set ReasoningEffort based on budget_tokens
@@ -343,17 +357,19 @@ func (c *ClaudeToOpenAIConverter) ConvertClaudeRequestToOpenAIWithOptions(body [
 				claudeRequest.Thinking.BudgetTokens, openaiRequest.ReasoningEffort)
 		}
 	}
-	if claudeRequest.OutputConfig != nil {
-		openaiRequest.ClaudeOutputConfig = claudeRequest.OutputConfig
+	if !options.OmitClaudeInternalFields {
+		if claudeRequest.OutputConfig != nil {
+			openaiRequest.ClaudeOutputConfig = claudeRequest.OutputConfig
+		}
+		openaiRequest.ClaudeAnthropicBeta = claudeRequest.AnthropicBeta
 	}
-	openaiRequest.ClaudeAnthropicBeta = claudeRequest.AnthropicBeta
 
 	result, err := json.Marshal(openaiRequest)
 	if err != nil {
 		return nil, fmt.Errorf("unable to marshal openai request: %v", err)
 	}
 
-	log.Debugf("[Claude->OpenAI] Converted OpenAI request body: %s", string(result))
+	log.Debugf("[Claude->OpenAI] Converted OpenAI request body: %s", result)
 	return result, nil
 }
 
@@ -379,7 +395,7 @@ func computeClaudeInputTokens(u *usage) int {
 
 // ConvertOpenAIResponseToClaude converts an OpenAI response back to Claude format
 func (c *ClaudeToOpenAIConverter) ConvertOpenAIResponseToClaude(ctx wrapper.HttpContext, body []byte) ([]byte, error) {
-	log.Debugf("[OpenAI->Claude] Original OpenAI response body: %s", string(body))
+	log.Debugf("[OpenAI->Claude] Original OpenAI response body: %s", body)
 
 	var openaiResponse chatCompletionResponse
 	if err := json.Unmarshal(body, &openaiResponse); err != nil {
@@ -424,13 +440,13 @@ func (c *ClaudeToOpenAIConverter) ConvertOpenAIResponseToClaude(ctx wrapper.Http
 		return nil, fmt.Errorf("unable to marshal claude response: %v", err)
 	}
 
-	log.Debugf("[OpenAI->Claude] Converted Claude response body: %s", string(result))
+	log.Debugf("[OpenAI->Claude] Converted Claude response body: %s", result)
 	return result, nil
 }
 
 // ConvertOpenAIStreamResponseToClaude converts OpenAI streaming response to Claude format
 func (c *ClaudeToOpenAIConverter) ConvertOpenAIStreamResponseToClaude(ctx wrapper.HttpContext, chunk []byte, isLastChunk bool) ([]byte, error) {
-	log.Debugf("[OpenAI->Claude] Original OpenAI streaming chunk: %s", string(chunk))
+	log.Debugf("[OpenAI->Claude] Original OpenAI streaming chunk: %s", chunk)
 
 	// Reassemble SSE events across callbacks: one callback is an arbitrary byte
 	// chunk, not a complete event. The final callback flushes any retained tail
@@ -549,7 +565,7 @@ func (c *ClaudeToOpenAIConverter) ConvertOpenAIStreamResponseToClaude(ctx wrappe
 	}
 
 	claudeChunk := []byte(result.String())
-	log.Debugf("[OpenAI->Claude] Converted Claude streaming chunk: %s", string(claudeChunk))
+	log.Debugf("[OpenAI->Claude] Converted Claude streaming chunk: %s", claudeChunk)
 	return claudeChunk, nil
 }
 
@@ -1067,7 +1083,8 @@ func openAIFinishReasonToClaude(reason string) string {
 }
 
 // convertContentArray converts an array of Claude content to OpenAI content format
-func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeChatMessageContent) *contentConversionResult {
+func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeChatMessageContent, omitClaudeBlocks ...bool) *contentConversionResult {
+	skipClaudeBlocks := len(omitClaudeBlocks) > 0 && omitClaudeBlocks[0]
 	result := &contentConversionResult{
 		textParts:          []string{},
 		reasoningParts:     []string{},
@@ -1076,7 +1093,10 @@ func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeCha
 		openaiContents:     []chatMessageContent{},
 		hasReasoningBlocks: false,
 	}
-	claudeContentBlocks := make([]claudeChatMessageContent, 0, len(claudeContents))
+	var claudeContentBlocks []claudeChatMessageContent
+	if !skipClaudeBlocks {
+		claudeContentBlocks = make([]claudeChatMessageContent, 0, len(claudeContents))
+	}
 	preserveClaudeContentBlocks := false
 
 	for _, claudeContent := range claudeContents {
@@ -1130,9 +1150,11 @@ func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeCha
 			if claudeContent.Id != "" && claudeContent.Name != "" {
 				// Convert input to JSON string for OpenAI format
 				var argumentsStr string
-				if claudeContent.Input != nil {
-					if argBytes, err := json.Marshal(claudeContent.Input); err == nil {
-						argumentsStr = string(argBytes)
+				if len(claudeContent.Input) > 0 {
+					var buf bytes.Buffer
+					buf.Grow(len(claudeContent.Input))
+					if err := json.Compact(&buf, claudeContent.Input); err == nil {
+						argumentsStr = buf.String()
 					}
 				}
 
@@ -1153,9 +1175,11 @@ func (c *ClaudeToOpenAIConverter) convertContentArray(claudeContents []claudeCha
 			result.toolResults = append(result.toolResults, claudeContent)
 			log.Debugf("[Claude->OpenAI] Found tool_result for tool_use_id: %s", claudeContent.ToolUseId)
 		}
-		claudeContentBlocks = append(claudeContentBlocks, preservedClaudeContent)
+		if !skipClaudeBlocks {
+			claudeContentBlocks = append(claudeContentBlocks, preservedClaudeContent)
+		}
 	}
-	if preserveClaudeContentBlocks {
+	if !skipClaudeBlocks && preserveClaudeContentBlocks {
 		result.claudeContentBlocks = claudeContentBlocks
 	}
 

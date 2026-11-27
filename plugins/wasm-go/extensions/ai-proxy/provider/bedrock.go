@@ -919,7 +919,11 @@ func (b *bedrockProvider) buildBedrockTextGenerationRequest(origRequest *chatCom
 		case roleTool:
 			toolResultContents := []bedrockMessageContent{chatToolMessage2BedrockToolResultContent(msg)}
 			if len(msg.ClaudeContentBlocks) > 0 {
-				toolResultContents = claudeContentBlocksToBedrockContents(msg.ClaudeContentBlocks)
+				var err error
+				toolResultContents, err = claudeContentBlocksToBedrockContents(msg.ClaudeContentBlocks)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if len(messages) > 0 && messages[len(messages)-1].Role == roleUser && messages[len(messages)-1].Content[0].ToolResult != nil {
 				messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, toolResultContents...)
@@ -930,7 +934,11 @@ func (b *bedrockProvider) buildBedrockTextGenerationRequest(origRequest *chatCom
 				})
 			}
 		default:
-			messages = append(messages, chatMessage2BedrockMessage(msg))
+			bedrockMsg, err := chatMessage2BedrockMessage(msg)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, bedrockMsg)
 		}
 	}
 
@@ -1383,9 +1391,9 @@ type toolResultContentBlock struct {
 }
 
 type toolUseBlock struct {
-	Input     map[string]interface{} `json:"input"`
-	Name      string                 `json:"name"`
-	ToolUseId string                 `json:"toolUseId"`
+	Input     map[string]json.RawMessage `json:"input"`
+	Name      string                     `json:"name"`
+	ToolUseId string                     `json:"toolUseId"`
 }
 
 type bedrockInferenceConfig struct {
@@ -1477,19 +1485,26 @@ func chatToolMessage2BedrockToolResultContent(chatMessage chatMessage) bedrockMe
 	}
 }
 
-func chatMessage2BedrockMessage(chatMessage chatMessage) bedrockMessage {
+func chatMessage2BedrockMessage(chatMessage chatMessage) (bedrockMessage, error) {
 	var result bedrockMessage
 	if len(chatMessage.ClaudeContentBlocks) > 0 {
+		contents, err := claudeContentBlocksToBedrockContents(chatMessage.ClaudeContentBlocks)
+		if err != nil {
+			return bedrockMessage{}, err
+		}
 		return bedrockMessage{
 			Role:    chatMessage.Role,
-			Content: claudeContentBlocksToBedrockContents(chatMessage.ClaudeContentBlocks),
-		}
+			Content: contents,
+		}, nil
 	}
 	if len(chatMessage.ToolCalls) > 0 {
 		contents := make([]bedrockMessageContent, 0, len(chatMessage.ToolCalls))
 		for _, toolCall := range chatMessage.ToolCalls {
-			params := map[string]interface{}{}
+			params := map[string]json.RawMessage{}
 			json.Unmarshal([]byte(toolCall.Function.Arguments), &params)
+			if params == nil {
+				params = map[string]json.RawMessage{}
+			}
 			contents = append(contents, bedrockMessageContent{
 				ToolUse: &toolUseBlock{
 					Input:     params,
@@ -1539,10 +1554,10 @@ func chatMessage2BedrockMessage(chatMessage chatMessage) bedrockMessage {
 			Content: contents,
 		}
 	}
-	return result
+	return result, nil
 }
 
-func claudeContentBlocksToBedrockContents(blocks []claudeChatMessageContent) []bedrockMessageContent {
+func claudeContentBlocksToBedrockContents(blocks []claudeChatMessageContent) ([]bedrockMessageContent, error) {
 	result := make([]bedrockMessageContent, 0, len(blocks))
 	for _, block := range blocks {
 		switch block.Type {
@@ -1556,8 +1571,12 @@ func claudeContentBlocksToBedrockContents(blocks []claudeChatMessageContent) []b
 				}})
 			}
 		case "tool_use":
+			input, err := claudeToolUseInput(block.Input)
+			if err != nil {
+				return nil, err
+			}
 			result = append(result, bedrockMessageContent{ToolUse: &toolUseBlock{
-				Input:     claudeToolUseInput(block.Input),
+				Input:     input,
 				Name:      block.Name,
 				ToolUseId: block.Id,
 			}})
@@ -1573,14 +1592,21 @@ func claudeContentBlocksToBedrockContents(blocks []claudeChatMessageContent) []b
 			}})
 		}
 	}
-	return result
+	return result, nil
 }
 
-func claudeToolUseInput(input *map[string]interface{}) map[string]interface{} {
-	if input == nil {
-		return map[string]interface{}{}
+func claudeToolUseInput(input claudeRawJSONObject) (map[string]json.RawMessage, error) {
+	if len(input) == 0 {
+		return map[string]json.RawMessage{}, nil
 	}
-	return *input
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(input, &m); err != nil {
+		return nil, fmt.Errorf("invalid claude tool_use input: %w", err)
+	}
+	if m == nil {
+		return map[string]json.RawMessage{}, nil
+	}
+	return m, nil
 }
 
 func bedrockThinkingFromClaudeConfig(thinking *claudeThinkingConfig) map[string]interface{} {

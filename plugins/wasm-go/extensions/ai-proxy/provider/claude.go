@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +65,28 @@ type claudeChatMessageContentSource struct {
 	FileId    string `json:"file_id,omitempty"`
 }
 
+type claudeRawJSONObject json.RawMessage
+
+func (r *claudeRawJSONObject) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*r = nil
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return fmt.Errorf("claude tool_use input must be a JSON object")
+	}
+	*r = append((*r)[:0], trimmed...)
+	return nil
+}
+
+func (r claudeRawJSONObject) MarshalJSON() ([]byte, error) {
+	if len(r) == 0 {
+		return []byte("null"), nil
+	}
+	return r, nil
+}
+
 type claudeChatMessageContent struct {
 	Type         string                          `json:"type"`
 	Text         string                          `json:"text,omitempty"`
@@ -71,9 +94,9 @@ type claudeChatMessageContent struct {
 	Source       *claudeChatMessageContentSource `json:"source,omitempty"`
 	CacheControl map[string]interface{}          `json:"cache_control,omitempty"`
 	// Tool use fields
-	Id    string                  `json:"id,omitempty"`    // For tool_use
-	Name  string                  `json:"name,omitempty"`  // For tool_use
-	Input *map[string]interface{} `json:"input,omitempty"` // For tool_use
+	Id    string              `json:"id,omitempty"`    // For tool_use
+	Name  string              `json:"name,omitempty"`  // For tool_use
+	Input claudeRawJSONObject `json:"input,omitempty"` // For tool_use
 	// Tool result fields
 	ToolUseId string                      `json:"tool_use_id,omitempty"` // For tool_result
 	Content   *claudeChatMessageContentWr `json:"content,omitempty"`     // For tool_result - can be string or array
@@ -616,21 +639,21 @@ func (c *claudeProvider) buildClaudeTextGenRequest(origRequest *chatCompletionRe
 
 			// Convert tool_calls to tool_use content blocks
 			for _, tc := range message.ToolCalls {
-				var inputMap map[string]interface{}
+				rawInput := claudeRawJSONObject("{}")
 				if tc.Function.Arguments != "" {
-					if err := json.Unmarshal([]byte(tc.Function.Arguments), &inputMap); err != nil {
+					var parsed claudeRawJSONObject
+					if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
 						log.Errorf("failed to parse tool call arguments: %v", err)
-						inputMap = make(map[string]interface{})
+					} else if len(parsed) > 0 {
+						rawInput = parsed
 					}
-				} else {
-					inputMap = make(map[string]interface{})
 				}
 
 				chatMessageContents = append(chatMessageContents, claudeChatMessageContent{
 					Type:  "tool_use",
 					Id:    tc.Id,
 					Name:  tc.Function.Name,
-					Input: &inputMap,
+					Input: rawInput,
 				})
 			}
 
