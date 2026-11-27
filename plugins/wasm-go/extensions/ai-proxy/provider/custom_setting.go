@@ -122,6 +122,9 @@ func (c *CustomSetting) AdjustWithProtocol(protocol string) {
 }
 
 func ReplaceByCustomSettings(body []byte, settings []CustomSetting) ([]byte, error) {
+	if len(settings) == 0 {
+		return body, nil
+	}
 	var err error
 	strBody := string(body)
 	for _, setting := range settings {

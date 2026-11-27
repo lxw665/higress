@@ -1107,6 +1107,25 @@ func isDeveloperRoleSupported(providerType string) bool {
 // convertDeveloperRoleToSystem converts "developer" roles to "system" role in the request body.
 // This is used for providers that don't support the "developer" role.
 func convertDeveloperRoleToSystem(body []byte) ([]byte, error) {
+	var probe struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return body, fmt.Errorf("unable to unmarshal request for developer role conversion: %v", err)
+	}
+	hasDeveloper := false
+	for i := range probe.Messages {
+		if probe.Messages[i].Role == roleDeveloper {
+			hasDeveloper = true
+			break
+		}
+	}
+	if !hasDeveloper {
+		return body, nil
+	}
+
 	request := &chatCompletionRequest{}
 	if err := json.Unmarshal(body, request); err != nil {
 		return body, fmt.Errorf("unable to unmarshal request for developer role conversion: %v", err)
@@ -1267,10 +1286,12 @@ func (c *ProviderConfig) handleRequestBody(
 		}
 
 		// Convert Claude protocol to OpenAI protocol
+		omitClaudeInternalFields := provider.GetProviderType() != providerTypeBedrock && provider.GetProviderType() != providerTypeClaude
 		converter := &ClaudeToOpenAIConverter{}
 		body, err = converter.ConvertClaudeRequestToOpenAIWithOptions(body, ClaudeToOpenAIConvertOptions{
 			PreserveMessageReasoningContent: c.supportsMessageReasoningContent(),
-			DisableStreamUsageStats:          c.disableStreamUsageStats,
+			DisableStreamUsageStats:         c.disableStreamUsageStats,
+			OmitClaudeInternalFields:        omitClaudeInternalFields,
 		})
 		if err != nil {
 			return types.ActionContinue, fmt.Errorf("failed to convert claude request to openai: %v", err)
@@ -1309,10 +1330,6 @@ func (c *ProviderConfig) handleRequestBody(
 		} else {
 			log.Debugf("[developerRole] converted developer role to system for provider: %s", c.typ)
 		}
-	}
-
-	if needClaudeConversion && provider.GetProviderType() != providerTypeBedrock && provider.GetProviderType() != providerTypeClaude {
-		body = stripClaudeInternalMessageFields(body, c.supportsMessageReasoningContent())
 	}
 
 	// use openai protocol (either original openai or converted from claude)
@@ -1457,10 +1474,14 @@ func (c *ProviderConfig) defaultTransformRequestBody(ctx wrapper.HttpContext, ap
 			ctx.SetContext(ctxKeyIsStreaming, false)
 		}
 	}
-	model := gjson.GetBytes(body, "model").String()
+	modelResult := gjson.GetBytes(body, "model")
+	model := modelResult.String()
 	ctx.SetContext(ctxKeyOriginalRequestModel, model)
 	mappedModel := getMappedModel(model, c.modelMapping)
 	ctx.SetContext(ctxKeyFinalRequestModel, mappedModel)
+	if modelResult.Type == gjson.String && mappedModel == model {
+		return body, nil
+	}
 	return sjson.SetBytes(body, "model", mappedModel)
 }
 

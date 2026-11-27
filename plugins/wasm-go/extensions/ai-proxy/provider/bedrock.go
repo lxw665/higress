@@ -1576,11 +1576,15 @@ func claudeContentBlocksToBedrockContents(blocks []claudeChatMessageContent) []b
 	return result
 }
 
-func claudeToolUseInput(input *map[string]interface{}) map[string]interface{} {
-	if input == nil {
+func claudeToolUseInput(input claudeRawJSONObject) map[string]interface{} {
+	if len(input) == 0 {
 		return map[string]interface{}{}
 	}
-	return *input
+	var m map[string]interface{}
+	if err := json.Unmarshal(input, &m); err != nil || m == nil {
+		return map[string]interface{}{}
+	}
+	return m
 }
 
 func bedrockThinkingFromClaudeConfig(thinking *claudeThinkingConfig) map[string]interface{} {

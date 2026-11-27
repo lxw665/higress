@@ -740,7 +740,7 @@ func TestClaudeToOpenAIConverter_ConvertClaudeRequestToOpenAI(t *testing.T) {
 		assert.Equal(t, "{}", assistantMsg.ToolCalls[0].Function.Arguments)
 		require.Len(t, assistantMsg.ClaudeContentBlocks, 2)
 		require.NotNil(t, assistantMsg.ClaudeContentBlocks[1].Input)
-		assert.Empty(t, *assistantMsg.ClaudeContentBlocks[1].Input)
+		assert.JSONEq(t, "{}", string(assistantMsg.ClaudeContentBlocks[1].Input))
 	})
 
 	t.Run("convert_tool_result_to_tool_message", func(t *testing.T) {
@@ -1642,7 +1642,7 @@ func TestClaudeToOpenAIConverter_streaming_tool_call_smoke(t *testing.T) {
 func TestClaudeToOpenAIConverter_ConvertOpenAIStreamResponseToClaude_Compatibility(t *testing.T) {
 	t.Run("finish_reason empty string should not stop stream", func(t *testing.T) {
 		converter := &ClaudeToOpenAIConverter{}
-	ctx := newMapCtx()
+		ctx := newMapCtx()
 
 		chunk1 := `data: {"id":"stream-1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":""}],"created":1,"model":"m","object":"chat.completion.chunk"}` + "\n\n"
 		out1, err := converter.ConvertOpenAIStreamResponseToClaude(ctx, []byte(chunk1), false)
@@ -1668,7 +1668,7 @@ func TestClaudeToOpenAIConverter_ConvertOpenAIStreamResponseToClaude_Compatibili
 
 	t.Run("usage in every chunk should not trigger early message_stop", func(t *testing.T) {
 		converter := &ClaudeToOpenAIConverter{}
-	ctx := newMapCtx()
+		ctx := newMapCtx()
 
 		chunkStart := `data: {"id":"stream-2","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"created":1,"model":"m","object":"chat.completion.chunk"}` + "\n\n"
 		_, err := converter.ConvertOpenAIStreamResponseToClaude(ctx, []byte(chunkStart), false)
